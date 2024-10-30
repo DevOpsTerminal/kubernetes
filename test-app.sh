@@ -20,45 +20,83 @@ ssh root@$SERVER_IP "
         echo \"[\$(date '+%Y-%m-%d %H:%M:%S')] \$1\"
     }
 
-    # Sprawdź stan klastra
+    # Test stanu klastra
     log 'Stan klastra:'
-    kubectl get nodes
+    kubectl get nodes -o wide
     kubectl describe nodes
+    kubectl get componentstatuses
 
-    # Sprawdź stan podów
-    log 'Stan podów:'
-    kubectl get pods -l app=example -o wide
+    # Test stanu podów
+    log 'Stan podów i deploymentów:'
+    kubectl get deployments -A
+    kubectl get pods -A -o wide
     kubectl describe pods -l app=example
 
-    # Sprawdź eventy klastra
-    log 'Eventy klastra:'
-    kubectl get events --sort-by='.lastTimestamp'
-
-    # Sprawdź stan komponentów systemowych
-    log 'Stan komponentów systemowych:'
-    kubectl get pods -n kube-system
-
-    # Sprawdź status CNI (Flannel)
-    log 'Status Flannel:'
+    # Test networkingu
+    log 'Stan networkingu:'
+    kubectl get pods -n kube-system -l k8s-app=kube-dns
     kubectl get pods -n kube-flannel
+    ip a
+    ip route
+    cat /etc/cni/net.d/*
+    crictl info | grep -i network
 
-    # Sprawdź serwisy
-    log 'Status serwisów:'
-    kubectl get svc example-service
-    kubectl describe svc example-service
+    # Test storage
+    log 'Stan storage:'
+    df -h
+    mount | grep kubernetes
+    ls -la /var/lib/kubelet
 
-    # Sprawdź Ingress
-    log 'Status Ingress:'
-    kubectl get ingress example-ingress
-    kubectl describe ingress example-ingress
+    # Test logów systemowych
+    log 'Logi systemowe:'
+    journalctl -u kubelet --since \"5 minutes ago\" | tail -n 50
+    journalctl -u containerd --since \"5 minutes ago\" | tail -n 50
 
-    # Jeśli pody są running, sprawdź logi
+    # Test portów
+    log 'Stan portów:'
+    netstat -tulpn
+    ss -tulpn
+
+    # Test DNS
+    log 'Stan DNS:'
+    kubectl get pods -n kube-system -l k8s-app=kube-dns -o wide
+    kubectl logs -n kube-system -l k8s-app=kube-dns --tail=50
+
+    # Test usług
+    log 'Stan usług:'
+    kubectl get all --all-namespaces
+    kubectl get endpoints -A
+
+    # Test konfiguracji
+    log 'Konfiguracja:'
+    kubectl get configmaps -A
+    kubectl get secrets -A
+
+    # Test zasobów
+    log 'Użycie zasobów:'
+    kubectl top nodes || echo 'metrics-server nie jest zainstalowany'
+    kubectl top pods -A || echo 'metrics-server nie jest zainstalowany'
+
+    # Test taint i toleracji
+    log 'Tainty i toleracje:'
+    kubectl get nodes -o=custom-columns=NAME:.metadata.name,TAINTS:.spec.taints
+
+    # Test ingress
+    log 'Stan Ingress:'
+    kubectl get ingress -A
+    kubectl describe ingress -A
+
+    # Test aplikacji
     if kubectl get pods -l app=example | grep Running; then
-        log 'Logi aplikacji:'
-        for pod in \$(kubectl get pods -l app=example -o jsonpath='{.items[*].metadata.name}'); do
-            echo \"Logi dla poda \$pod:\"
-            kubectl logs \$pod
-        done
+        log 'Test aplikacji:'
+        POD_NAME=\$(kubectl get pods -l app=example -o jsonpath='{.items[0].metadata.name}')
+        kubectl exec \$POD_NAME -- curl -sS localhost:80
+        kubectl logs \$POD_NAME
+
+        SERVICE_IP=\$(kubectl get svc example-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+        if [ -n \"\$SERVICE_IP\" ]; then
+            curl -k -v https://\$SERVICE_IP
+        fi
     fi
 " 2>&1 | tee -a $LOG_FILE
 
